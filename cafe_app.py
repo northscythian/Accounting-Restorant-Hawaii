@@ -402,7 +402,7 @@ with st.sidebar:
     st.markdown("---")
     menu = st.selectbox(
         "Выберите раздел",
-        ["📊 Дашборд", "📝 Заказы", "🍽️ Меню", "📦 Склад", "📈 Отчеты"],
+        ["📊 Дашборд", "📝 Заказы", "🍽️ Меню", "📦 Склад", "👥 Персонал", "📈 Отчеты"],
         format_func=lambda x: x.split(" ", 1)[1] if " " in x else x,
     )
     st.markdown("---")
@@ -487,6 +487,21 @@ elif menu == "📝 Заказы":
     else:
         st.markdown("### 🆕 Новый заказ")
 
+        # Загрузка списка сотрудников из Excel
+        @st.cache_data
+        def load_staff_list():
+            try:
+                staff_df = pd.read_excel(EXCEL_FILE, sheet_name="ПЕРСОНАЛ")
+                active_staff = staff_df[(staff_df["Активен"] == "Да") & 
+                                         ((staff_df["Должность"] == "Официант") | 
+                                          (staff_df["Должность"] == "Администратор"))]
+                staff_names = active_staff["Имя"].tolist()
+                return staff_names if staff_names else ["Анна", "Иван", "Елена", "Сергей"]
+            except:
+                return ["Анна", "Иван", "Елена", "Сергей"]
+
+        waiters_list = load_staff_list()
+
         if "cart" not in st.session_state:
             st.session_state.cart = {}
 
@@ -502,7 +517,7 @@ elif menu == "📝 Заказы":
                 with c1:
                     order_date = st.date_input("📅 Дата")
                     table = st.number_input("🍽️ Столик", min_value=1, value=1)
-                    waiter = st.selectbox("👨‍🍳 Официант", ["Анна", "Иван", "Елена", "Сергей"])
+                    waiter = st.selectbox("👨‍🍳 Официант", waiters_list)
                 with c2:
                     order_time = st.time_input("⏰ Время")
                     guests = st.number_input("👥 Гостей", min_value=1, value=2)
@@ -1076,7 +1091,146 @@ elif menu == "📈 Отчеты":
                 f"Прибыль за период (оценка): **{profit:,.0f} ₸** | "
                 f"Файл Excel содержит 5 листов: Сводка, Заказы, По дням, Популярные блюда, По оплате."
             )
-
+# === ПЕРСОНАЛ ===
+elif menu == "👥 Персонал":
+    st.markdown("### 👥 Управление персоналом")
+    
+    # Функция для загрузки персонала
+    @st.cache_data
+    def load_staff():
+        try:
+            df = pd.read_excel(EXCEL_FILE, sheet_name="ПЕРСОНАЛ")
+            return df
+        except:
+            # Создаём пустой DataFrame с правильными колонками
+            return pd.DataFrame(columns=["ID", "Имя", "Должность", "Телефон", "PIN-код", "Активен", "Дата добавления"])
+    
+    # Функция для сохранения персонала
+    def save_staff(df):
+        safe_save_to_excel(df, "ПЕРСОНАЛ", mode="replace")
+        refresh_data()
+    
+    # Загружаем данные
+    staff_df = load_staff()
+    
+    # Форма для добавления нового сотрудника
+    with st.expander("➕ Добавить сотрудника", expanded=True):
+        with st.form("add_staff_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                new_name = st.text_input("👤 Имя сотрудника")
+                new_role = st.selectbox("📌 Должность", ["Администратор", "Официант", "Повар", "Бухгалтер"])
+                new_phone = st.text_input("📞 Телефон")
+            with col2:
+                new_pin = st.text_input("🔐 PIN-код (4 цифры)", max_chars=4, type="password")
+                new_active = st.checkbox("Активен", value=True)
+            
+            if st.form_submit_button("✅ Добавить сотрудника"):
+                if new_name and new_pin:
+                    # Генерируем новый ID
+                    new_id = staff_df["ID"].max() + 1 if not staff_df.empty else 1
+                    new_row = pd.DataFrame([{
+                        "ID": new_id,
+                        "Имя": new_name,
+                        "Должность": new_role,
+                        "Телефон": new_phone,
+                        "PIN-код": new_pin,
+                        "Активен": "Да" if new_active else "Нет",
+                        "Дата добавления": datetime.now().strftime("%d.%m.%Y")
+                    }])
+                    updated = pd.concat([staff_df, new_row], ignore_index=True)
+                    save_staff(updated)
+                    st.success(f"✅ Сотрудник '{new_name}' добавлен!")
+                    st.rerun()
+                else:
+                    st.warning("Заполните имя и PIN-код")
+    
+    st.markdown("---")
+    st.markdown("#### 📋 Список сотрудников")
+    
+    if staff_df.empty:
+        st.info("Нет сотрудников. Добавьте первого.")
+    else:
+        # Отображаем каждого сотрудника
+        for i, row in staff_df.iterrows():
+            col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 1, 1])
+            
+            with col1:
+                st.markdown(f"**{row['Имя']}**")
+                st.caption(row['Должность'])
+            with col2:
+                st.markdown(f"📞 {row['Телефон'] if pd.notna(row['Телефон']) else '—'}")
+            with col3:
+                status = "🟢 Активен" if row['Активен'] == "Да" else "🔴 Неактивен"
+                st.markdown(status)
+            with col4:
+                if st.button("✏️", key=f"edit_staff_{i}"):
+                    st.session_state.edit_staff = row['ID']
+                    st.session_state.edit_staff_name = row['Имя']
+                    st.session_state.edit_staff_role = row['Должность']
+                    st.session_state.edit_staff_phone = row['Телефон'] if pd.notna(row['Телефон']) else ""
+                    st.session_state.edit_staff_active = row['Активен'] == "Да"
+            with col5:
+                if st.button("🗑️", key=f"del_staff_{i}"):
+                    updated = staff_df[staff_df["ID"] != row['ID']]
+                    save_staff(updated)
+                    st.success(f"🗑️ Сотрудник '{row['Имя']}' удалён!")
+                    st.rerun()
+            st.markdown("---")
+        
+        # Форма редактирования
+        if 'edit_staff' in st.session_state:
+            st.markdown("---")
+            st.subheader(f"✏️ Редактирование: {st.session_state.edit_staff_name}")
+            with st.form("edit_staff_form"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    edit_name = st.text_input("Имя", value=st.session_state.edit_staff_name)
+                    edit_role = st.selectbox("Должность", ["Администратор", "Официант", "Повар", "Бухгалтер"], 
+                                             index=["Администратор", "Официант", "Повар", "Бухгалтер"].index(st.session_state.edit_staff_role))
+                    edit_phone = st.text_input("Телефон", value=st.session_state.edit_staff_phone)
+                with col2:
+                    edit_active = st.checkbox("Активен", value=st.session_state.edit_staff_active)
+                
+                if st.form_submit_button("✅ Сохранить изменения"):
+                    idx = staff_df[staff_df["ID"] == st.session_state.edit_staff].index[0]
+                    staff_df.at[idx, "Имя"] = edit_name
+                    staff_df.at[idx, "Должность"] = edit_role
+                    staff_df.at[idx, "Телефон"] = edit_phone
+                    staff_df.at[idx, "Активен"] = "Да" if edit_active else "Нет"
+                    save_staff(staff_df)
+                    del st.session_state.edit_staff
+                    st.success("✅ Изменения сохранены!")
+                    st.rerun()
+    
+    # Статистика по сотрудникам (если есть заказы)
+    if orders is not None and len(orders) > 0 and not staff_df.empty:
+        st.markdown("---")
+        st.markdown("#### 📊 Статистика сотрудников")
+        
+        # Считаем заказы по официантам
+        staff_stats = []
+        for _, row in staff_df.iterrows():
+            if row['Должность'] in ["Официант", "Администратор"]:
+                staff_orders = orders[orders["Официант"] == row['Имя']]
+                if len(staff_orders) > 0:
+                    staff_stats.append({
+                        "Сотрудник": row['Имя'],
+                        "Заказов": len(staff_orders),
+                        "Выручка": staff_orders["Сумма (₸)"].sum(),
+                        "Ср. чек": staff_orders["Сумма (₸)"].sum() / len(staff_orders)
+                    })
+        
+        if staff_stats:
+            stats_df = pd.DataFrame(staff_stats)
+            st.dataframe(stats_df, use_container_width=True)
+            
+            # График выручки по сотрудникам
+            fig = px.bar(stats_df, x="Сотрудник", y="Выручка", 
+                         title="Выручка по сотрудникам",
+                         template="plotly_dark", color_discrete_sequence=["#d4a373"])
+            fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True)
 st.markdown(
     '<p style="text-align: center; color: #888; font-size: 12px;">☕ Работает на Streamlit</p>',
     unsafe_allow_html=True,
