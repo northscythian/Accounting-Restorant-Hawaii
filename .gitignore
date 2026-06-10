@@ -7,3 +7,11 @@ init_subcategories.py
 Архив/
 __pycache__/
 *.pyc
+Info.docx
+Info.pdf
+fix_menu.py
+init_categories.py
+init_full_structure.py
+init_subcategories.py
+Архив/
+__pycache__/
