@@ -15,3 +15,6 @@ init_full_structure.py
 init_subcategories.py
 Архив/
 __pycache__/
+.streamlit/
+backups/
+*_backup_*.py
