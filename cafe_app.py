@@ -44,9 +44,26 @@ st.set_page_config(
 )
 
 
+# === СЕССИЯ ===
+for _key in ("orders_df", "menu_df", "ingredients_df", "recipes_df", "staff_df", "structure_df", "data_loaded"):
+    if _key not in st.session_state:
+        st.session_state[_key] = None if _key != "data_loaded" else False
+
 # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
+def invalidate_data(*tables):
+    if not tables:
+        for _k in ("orders_df", "menu_df", "ingredients_df", "recipes_df", "staff_df", "structure_df"):
+            st.session_state[_k] = None
+        st.session_state.data_loaded = False
+    else:
+        for _t in tables:
+            key = f"{_t.lower()}_df"
+            if key in st.session_state:
+                st.session_state[key] = None
+        st.session_state.data_loaded = False
+
 def refresh_data():
-    st.cache_data.clear()
+    invalidate_data()
 
 
 def backup_excel_file():
@@ -101,7 +118,6 @@ def get_google_sheet(sheet_name, columns=None):
 
 def read_table(sheet_name, columns=None):
     if google_sheets_configured():
-        time_module.sleep(0.3)
         try:
             worksheet = get_google_sheet(sheet_name, columns)
             records = worksheet.get_all_records()
@@ -132,11 +148,15 @@ def save_table(df, sheet_name):
             worksheet.clear()
             if values:
                 worksheet.update("A1", values)
+            invalidate_data()
             return True
         except Exception as e:
             st.error(f"Ошибка сохранения в Google Sheets: {e}")
             return False
-    return save_table_to_excel(df, sheet_name)
+    result = save_table_to_excel(df, sheet_name)
+    if result:
+        invalidate_data()
+    return result
 
 
 def import_excel_to_google_sheets():
@@ -167,7 +187,9 @@ def verify_pin(pin, stored_value):
 
 def get_staff_df():
     columns = ["ID", "Имя", "Должность", "Телефон", "PIN-код", "Активен", "Дата добавления"]
-    return read_table("ПЕРСОНАЛ", columns=columns)
+    if st.session_state.staff_df is None:
+        st.session_state.staff_df = read_table("ПЕРСОНАЛ", columns=columns)
+    return st.session_state.staff_df
 
 
 def authenticate_staff(pin):
@@ -470,14 +492,16 @@ def remove_menu_dish(dish_name):
     safe_save_to_excel(updated, "МЕНЮ", mode="replace")
 
 
-@st.cache_data
 def load_full_structure():
-    if not google_sheets_configured() and not os.path.exists(EXCEL_FILE):
-        return pd.DataFrame(columns=STRUCTURE_COLUMNS)
-    try:
-        return read_table("КАТЕГОРИИ_ПОЛНАЯ", columns=STRUCTURE_COLUMNS)
-    except Exception:
-        return pd.DataFrame(columns=STRUCTURE_COLUMNS)
+    if st.session_state.structure_df is None:
+        if not google_sheets_configured() and not os.path.exists(EXCEL_FILE):
+            st.session_state.structure_df = pd.DataFrame(columns=STRUCTURE_COLUMNS)
+        else:
+            try:
+                st.session_state.structure_df = read_table("КАТЕГОРИИ_ПОЛНАЯ", columns=STRUCTURE_COLUMNS)
+            except Exception:
+                st.session_state.structure_df = pd.DataFrame(columns=STRUCTURE_COLUMNS)
+    return st.session_state.structure_df
 
 
 # === CSS ===
@@ -559,33 +583,55 @@ with st.sidebar:
     st.markdown('<div style="font-size: 12px; color: #888;">© 2026 | Кафе Учет</div>', unsafe_allow_html=True)
 
 # === ЗАГРУЗКА ДАННЫХ ===
-@st.cache_data
 def load_data():
-    if not google_sheets_configured() and not os.path.exists(EXCEL_FILE):
-        return None, None, None, None
+    if st.session_state.data_loaded:
+        return (
+            st.session_state.orders_df,
+            st.session_state.menu_df,
+            st.session_state.ingredients_df,
+            st.session_state.recipes_df,
+        )
+    orders = menu_data = ingredients = recipes = pd.DataFrame()
     try:
-        orders = read_table("ЗАКАЗЫ")
-        orders = ensure_order_columns(orders)
-        if "Дата" in orders.columns:
-            orders["Дата"] = pd.to_datetime(orders["Дата"], errors="coerce", dayfirst=True)
-            orders = orders[orders["Дата"].notna()]
-        menu_data = read_table("МЕНЮ")
-        ingredients = read_table("ИНГРЕДИЕНТЫ")
-        recipes = read_table("РЕЦЕПТЫ")
-        return orders, menu_data, ingredients, recipes
+        if google_sheets_configured() or os.path.exists(EXCEL_FILE):
+            orders = read_table("ЗАКАЗЫ")
+            orders = ensure_order_columns(orders)
+            if "Дата" in orders.columns:
+                orders["Дата"] = pd.to_datetime(orders["Дата"], errors="coerce", dayfirst=True)
+                orders = orders[orders["Дата"].notna()]
+            menu_data = read_table("МЕНЮ")
+            ingredients = read_table("ИНГРЕДИЕНТЫ")
+            recipes = read_table("РЕЦЕПТЫ")
+            migrate_orders_sheet()
     except Exception as e:
         st.error(f"Ошибка загрузки данных: {e}")
-        return None, None, None, None
+    st.session_state.orders_df = orders
+    st.session_state.menu_df = menu_data
+    st.session_state.ingredients_df = ingredients
+    st.session_state.recipes_df = recipes
+    st.session_state.data_loaded = True
+    return orders, menu_data, ingredients, recipes
 
 
-migrate_orders_sheet()
-orders, menu_data, ingredients, recipes = load_data()
+def load_staff_list():
+    try:
+        staff_df = get_staff_df()
+        active_staff = staff_df[(staff_df["Активен"] == "Да") & ((staff_df["Должность"] == "Официант") | (staff_df["Должность"] == "Администратор"))]
+        return active_staff["Имя"].tolist() if not active_staff.empty else ["Анна", "Иван", "Елена", "Сергей"]
+    except:
+        return ["Анна", "Иван", "Елена", "Сергей"]
+
+
+def load_staff():
+    return get_staff_df()
+
+
+with st.spinner("Загрузка данных..."):
+    orders, menu_data, ingredients, recipes = load_data()
 
 # === ДАШБОРД ===
 if menu == "📊 Дашборд":
-    if orders is None:
-        st.warning("📭 Файл данных не найден. Создайте 'Кафе_Учет.xlsx'.")
-    elif len(orders) == 0:
+    if orders.empty:
         st.info("📭 Нет заказов. Добавьте первый заказ в разделе «Заказы».")
     else:
         st.markdown("### 📈 Общая статистика")
@@ -620,19 +666,10 @@ if menu == "📊 Дашборд":
 
 # === ЗАКАЗЫ ===
 elif menu == "📝 Заказы":
-    if orders is None or menu_data is None:
-        st.warning("📭 Нет данных. Проверьте файл 'Кафе_Учет.xlsx'.")
+    if menu_data.empty:
+        st.info("📭 Нет блюд в меню. Добавьте блюда в разделе «Меню».")
     else:
         st.markdown("### 🆕 Новый заказ")
-        @st.cache_data
-        def load_staff_list():
-            try:
-                staff_df = get_staff_df()
-                active_staff = staff_df[(staff_df["Активен"] == "Да") & ((staff_df["Должность"] == "Официант") | (staff_df["Должность"] == "Администратор"))]
-                staff_names = active_staff["Имя"].tolist()
-                return staff_names if staff_names else ["Анна", "Иван", "Елена", "Сергей"]
-            except:
-                return ["Анна", "Иван", "Елена", "Сергей"]
         waiters_list = load_staff_list()
         if "cart" not in st.session_state:
             st.session_state.cart = {}
@@ -792,173 +829,170 @@ elif menu == "📝 Заказы":
 
 # === МЕНЮ ===
 elif menu == "🍽️ Меню":
-    if menu_data is None:
-        st.warning("📭 Файл данных не найден.")
-    else:
-        st.markdown("### 🍽️ Управление меню")
-        structure_df = load_full_structure()
-        with st.expander("🏷️ Управление категориями и подкатегориями", expanded=False):
-            main_cats = structure_df["Основная категория"].dropna().unique().tolist()
-            if st.button("🔄 Синхронизировать все листы", key="sync_all_sheets"):
-                sync_all_sheets(structure_df)
-                refresh_data()
-                st.success("✅ Листы синхронизированы!")
-                st.rerun()
-            col_cat1, col_cat2 = st.columns(2)
-            with col_cat1:
-                st.markdown("**➕ Новая основная категория**")
-                new_main_cat = st.text_input("Название категории", key="new_main_cat")
-                if st.button("✅ Добавить категорию", key="add_main_cat"):
-                    if new_main_cat and new_main_cat not in main_cats:
-                        new_row = pd.DataFrame([{"Основная категория": new_main_cat, "Подкатегория": "", "Блюдо": "", "Цена (₸)": 0, "Себестоимость (₸)": 0}])
-                        save_full_structure(pd.concat([structure_df, new_row], ignore_index=True))
-                        st.success(f"✅ Категория «{new_main_cat}» добавлена!")
-                        st.rerun()
-            with col_cat2:
-                st.markdown("**📁 Новая подкатегория**")
-                if main_cats:
-                    selected_main = st.selectbox("Выберите основную категорию", main_cats, key="select_main_for_sub")
-                    new_subcat = st.text_input("Название подкатегории", key="new_subcat")
-                    if st.button("✅ Добавить подкатегорию", key="add_subcat"):
-                        if new_subcat and selected_main:
-                            exists = structure_df[(structure_df["Основная категория"] == selected_main) & (structure_df["Подкатегория"] == new_subcat)]
-                            if exists.empty:
-                                new_row = pd.DataFrame([{"Основная категория": selected_main, "Подкатегория": new_subcat, "Блюдо": "", "Цена (₸)": 0, "Себестоимость (₸)": 0}])
-                                save_full_structure(pd.concat([structure_df, new_row], ignore_index=True))
-                                st.success(f"✅ Подкатегория «{new_subcat}» добавлена в «{selected_main}»!")
-                                st.rerun()
-                            else:
-                                st.warning("Такая подкатегория уже существует")
-                else:
-                    st.info("Сначала добавьте основную категорию.")
-            st.markdown("---")
-            st.markdown("**📋 Текущая структура**")
-            for main_cat in sorted(main_cats):
-                st.markdown(f"### 📌 {main_cat}")
-                subcats = structure_df[structure_df["Основная категория"] == main_cat]["Подкатегория"].dropna().unique()
-                subcats = [s for s in subcats if s != ""]
-                for subcat in subcats:
-                    col_del1, col_del2 = st.columns([4, 1])
-                    with col_del1:
-                        st.markdown(f"   📁 **{subcat}**")
-                    with col_del2:
-                        if st.button("🗑️", key=f"del_subcat_{main_cat}_{subcat}"):
-                            dishes_to_remove = get_dishes_in_scope(structure_df, main_cat, subcat)
-                            remove_menu_dishes(dishes_to_remove)
-                            updated = structure_df[~((structure_df["Основная категория"] == main_cat) & (structure_df["Подкатегория"] == subcat))]
-                            save_full_structure(updated)
-                            st.success(f"Подкатегория «{subcat}» удалена" + (f" ({len(dishes_to_remove)} блюд)" if dishes_to_remove else "") + "!")
-                            st.rerun()
-                col_del_cat1, col_del_cat2 = st.columns([4, 1])
-                with col_del_cat2:
-                    if st.button("🗑️ Удалить категорию", key=f"del_main_cat_{main_cat}"):
-                        dishes_to_remove = get_dishes_in_scope(structure_df, main_cat)
-                        remove_menu_dishes(dishes_to_remove)
-                        updated = structure_df[structure_df["Основная категория"] != main_cat]
-                        save_full_structure(updated)
-                        st.success(f"Категория «{main_cat}» удалена" + (f" ({len(dishes_to_remove)} блюд)" if dishes_to_remove else "") + "!")
-                        st.rerun()
-                st.markdown("---")
-        st.markdown("### ➕ Добавить новое блюдо")
-        main_cats_list = structure_df["Основная категория"].dropna().unique().tolist()
-        if main_cats_list:
-            col1, col2 = st.columns(2)
-            with col1:
-                selected_main_dish = st.selectbox("Основная категория", main_cats_list, key="dish_main_cat_new")
-                current_subcats = structure_df[structure_df["Основная категория"] == selected_main_dish]["Подкатегория"].dropna().unique()
-                current_subcats = [str(s).strip() for s in current_subcats if str(s).strip() != ""]
-                if not current_subcats:
-                    current_subcats = ["Нет подкатегорий"]
-                selected_subcat = st.selectbox("Подкатегория", current_subcats, key="dish_subcat_new")
-                new_dish = st.text_input("🍽️ Название блюда", key="new_dish_name")
-                new_ingredients = st.text_input("🥕 Ингредиенты (через запятую)", key="new_dish_ingredients")
-            with col2:
-                new_cost = st.number_input("📦 Себестоимость (₸)", min_value=0, value=100, key="new_dish_cost")
-                new_price = st.number_input("💰 Цена продажи (₸)", min_value=0, value=300, key="new_dish_price")
-            if st.button("✅ Сохранить блюдо", key="save_new_dish", use_container_width=True):
-                if selected_subcat == "Нет подкатегорий":
-                    st.warning("Сначала создайте подкатегорию в разделе «Управление категориями»")
-                elif not new_dish:
-                    st.warning("Введите название блюда")
-                elif new_dish in structure_df["Блюдо"].values:
-                    st.warning(f"Блюдо «{new_dish}» уже существует.")
-                else:
-                    new_row = pd.DataFrame([{"Основная категория": selected_main_dish, "Подкатегория": selected_subcat, "Блюдо": new_dish, "Цена (₸)": new_price, "Себестоимость (₸)": new_cost}])
+    st.markdown("### 🍽️ Управление меню")
+    structure_df = load_full_structure()
+    with st.expander("🏷️ Управление категориями и подкатегориями", expanded=False):
+        main_cats = structure_df["Основная категория"].dropna().unique().tolist()
+        if st.button("🔄 Синхронизировать все листы", key="sync_all_sheets"):
+            sync_all_sheets(structure_df)
+            refresh_data()
+            st.success("✅ Листы синхронизированы!")
+            st.rerun()
+        col_cat1, col_cat2 = st.columns(2)
+        with col_cat1:
+            st.markdown("**➕ Новая основная категория**")
+            new_main_cat = st.text_input("Название категории", key="new_main_cat")
+            if st.button("✅ Добавить категорию", key="add_main_cat"):
+                if new_main_cat and new_main_cat not in main_cats:
+                    new_row = pd.DataFrame([{"Основная категория": new_main_cat, "Подкатегория": "", "Блюдо": "", "Цена (₸)": 0, "Себестоимость (₸)": 0}])
                     save_full_structure(pd.concat([structure_df, new_row], ignore_index=True))
-                    upsert_menu_dish(new_dish, selected_main_dish, new_ingredients, new_cost, new_price)
-                    refresh_data()
-                    st.success(f"✅ Блюдо «{new_dish}» добавлено в «{selected_main_dish} → {selected_subcat}»!")
+                    st.success(f"✅ Категория «{new_main_cat}» добавлена!")
                     st.rerun()
-        else:
-            st.warning("Сначала создайте категории в разделе «Управление категориями»")
+        with col_cat2:
+            st.markdown("**📁 Новая подкатегория**")
+            if main_cats:
+                selected_main = st.selectbox("Выберите основную категорию", main_cats, key="select_main_for_sub")
+                new_subcat = st.text_input("Название подкатегории", key="new_subcat")
+                if st.button("✅ Добавить подкатегорию", key="add_subcat"):
+                    if new_subcat and selected_main:
+                        exists = structure_df[(structure_df["Основная категория"] == selected_main) & (structure_df["Подкатегория"] == new_subcat)]
+                        if exists.empty:
+                            new_row = pd.DataFrame([{"Основная категория": selected_main, "Подкатегория": new_subcat, "Блюдо": "", "Цена (₸)": 0, "Себестоимость (₸)": 0}])
+                            save_full_structure(pd.concat([structure_df, new_row], ignore_index=True))
+                            st.success(f"✅ Подкатегория «{new_subcat}» добавлена в «{selected_main}»!")
+                            st.rerun()
+                        else:
+                            st.warning("Такая подкатегория уже существует")
+            else:
+                st.info("Сначала добавьте основную категорию.")
         st.markdown("---")
-        st.markdown("#### 📋 Полное меню")
-        structure_df = load_full_structure()
-        for main_cat in sorted(structure_df["Основная категория"].dropna().unique()):
+        st.markdown("**📋 Текущая структура**")
+        for main_cat in sorted(main_cats):
             st.markdown(f"### 📌 {main_cat}")
             subcats = structure_df[structure_df["Основная категория"] == main_cat]["Подкатегория"].dropna().unique()
             subcats = [s for s in subcats if s != ""]
             for subcat in subcats:
-                st.markdown(f"####    📁 {subcat}")
-                dishes_df = structure_df[(structure_df["Основная категория"] == main_cat) & (structure_df["Подкатегория"] == subcat) & (structure_df["Блюдо"].astype(str).str.strip() != "")]
-                for idx, row in dishes_df.iterrows():
-                    dish = row["Блюдо"]
-                    price = row["Цена (₸)"] or 0
-                    cost = row["Себестоимость (₸)"] or 0
-                    margin = calculate_margin(price, cost)
-                    col_d1, col_d2, col_d3, col_d4 = st.columns([5, 2, 1, 1])
-                    with col_d1:
-                        st.markdown(f"🍽️ **{dish}**")
-                    with col_d2:
-                        st.markdown(f"{price:,.0f} ₸ | {margin:.0f}%")
-                    with col_d3:
-                        if st.button("✏️", key=f"edit_full_{idx}"):
-                            st.session_state.edit_dish_full = dish
-                            st.session_state.edit_price_full = price
-                            st.session_state.edit_cost_full = cost
-                    with col_d4:
-                        if st.button("🗑️", key=f"del_full_{idx}"):
-                            updated = structure_df[~((structure_df["Основная категория"] == main_cat) & (structure_df["Подкатегория"] == subcat) & (structure_df["Блюдо"] == dish))]
-                            save_full_structure(updated)
-                            remove_menu_dish(dish)
-                            refresh_data()
-                            st.rerun()
-                    st.markdown("---")
-        if "edit_dish_full" in st.session_state:
-            st.markdown("---")
-            st.subheader(f"✏️ Редактирование: {st.session_state.edit_dish_full}")
-            with st.form("edit_full_form_new"):
-                new_price = st.number_input("Цена (₸)", min_value=0, value=int(st.session_state.edit_price_full))
-                new_cost = st.number_input("Себестоимость (₸)", min_value=0, value=int(st.session_state.edit_cost_full))
-                if st.form_submit_button("✅ Сохранить"):
-                    structure_df = load_full_structure()
-                    idx = structure_df[structure_df["Блюдо"] == st.session_state.edit_dish_full].index[0]
-                    structure_df.at[idx, "Цена (₸)"] = new_price
-                    structure_df.at[idx, "Себестоимость (₸)"] = new_cost
-                    save_full_structure(structure_df)
-                    menu_df = read_table("МЕНЮ")
-                    if st.session_state.edit_dish_full in menu_df["Блюдо"].values:
-                        menu_idx = menu_df[menu_df["Блюдо"] == st.session_state.edit_dish_full].index[0]
-                        category = menu_df.at[menu_idx, "Категория"]
-                        ingredients_text = menu_df.at[menu_idx, "Ингредиенты"]
-                        upsert_menu_dish(st.session_state.edit_dish_full, category, ingredients_text, new_cost, new_price)
-                    del st.session_state.edit_dish_full
-                    refresh_data()
-                    st.success("✅ Изменения сохранены!")
+                col_del1, col_del2 = st.columns([4, 1])
+                with col_del1:
+                    st.markdown(f"   📁 **{subcat}**")
+                with col_del2:
+                    if st.button("🗑️", key=f"del_subcat_{main_cat}_{subcat}"):
+                        dishes_to_remove = get_dishes_in_scope(structure_df, main_cat, subcat)
+                        remove_menu_dishes(dishes_to_remove)
+                        updated = structure_df[~((structure_df["Основная категория"] == main_cat) & (structure_df["Подкатегория"] == subcat))]
+                        save_full_structure(updated)
+                        st.success(f"Подкатегория «{subcat}» удалена" + (f" ({len(dishes_to_remove)} блюд)" if dishes_to_remove else "") + "!")
+                        st.rerun()
+            col_del_cat1, col_del_cat2 = st.columns([4, 1])
+            with col_del_cat2:
+                if st.button("🗑️ Удалить категорию", key=f"del_main_cat_{main_cat}"):
+                    dishes_to_remove = get_dishes_in_scope(structure_df, main_cat)
+                    remove_menu_dishes(dishes_to_remove)
+                    updated = structure_df[structure_df["Основная категория"] != main_cat]
+                    save_full_structure(updated)
+                    st.success(f"Категория «{main_cat}» удалена" + (f" ({len(dishes_to_remove)} блюд)" if dishes_to_remove else "") + "!")
                     st.rerun()
+            st.markdown("---")
+    st.markdown("### ➕ Добавить новое блюдо")
+    main_cats_list = structure_df["Основная категория"].dropna().unique().tolist()
+    if main_cats_list:
+        col1, col2 = st.columns(2)
+        with col1:
+            selected_main_dish = st.selectbox("Основная категория", main_cats_list, key="dish_main_cat_new")
+            current_subcats = structure_df[structure_df["Основная категория"] == selected_main_dish]["Подкатегория"].dropna().unique()
+            current_subcats = [str(s).strip() for s in current_subcats if str(s).strip() != ""]
+            if not current_subcats:
+                current_subcats = ["Нет подкатегорий"]
+            selected_subcat = st.selectbox("Подкатегория", current_subcats, key="dish_subcat_new")
+            new_dish = st.text_input("🍽️ Название блюда", key="new_dish_name")
+            new_ingredients = st.text_input("🥕 Ингредиенты (через запятую)", key="new_dish_ingredients")
+        with col2:
+            new_cost = st.number_input("📦 Себестоимость (₸)", min_value=0, value=100, key="new_dish_cost")
+            new_price = st.number_input("💰 Цена продажи (₸)", min_value=0, value=300, key="new_dish_price")
+        if st.button("✅ Сохранить блюдо", key="save_new_dish", use_container_width=True):
+            if selected_subcat == "Нет подкатегорий":
+                st.warning("Сначала создайте подкатегорию в разделе «Управление категориями»")
+            elif not new_dish:
+                st.warning("Введите название блюда")
+            elif new_dish in structure_df["Блюдо"].values:
+                st.warning(f"Блюдо «{new_dish}» уже существует.")
+            else:
+                new_row = pd.DataFrame([{"Основная категория": selected_main_dish, "Подкатегория": selected_subcat, "Блюдо": new_dish, "Цена (₸)": new_price, "Себестоимость (₸)": new_cost}])
+                save_full_structure(pd.concat([structure_df, new_row], ignore_index=True))
+                upsert_menu_dish(new_dish, selected_main_dish, new_ingredients, new_cost, new_price)
+                refresh_data()
+                st.success(f"✅ Блюдо «{new_dish}» добавлено в «{selected_main_dish} → {selected_subcat}»!")
+                st.rerun()
+    else:
+        st.warning("Сначала создайте категории в разделе «Управление категориями»")
+    st.markdown("---")
+    st.markdown("#### 📋 Полное меню")
+    structure_df = load_full_structure()
+    for main_cat in sorted(structure_df["Основная категория"].dropna().unique()):
+        st.markdown(f"### 📌 {main_cat}")
+        subcats = structure_df[structure_df["Основная категория"] == main_cat]["Подкатегория"].dropna().unique()
+        subcats = [s for s in subcats if s != ""]
+        for subcat in subcats:
+            st.markdown(f"####    📁 {subcat}")
+            dishes_df = structure_df[(structure_df["Основная категория"] == main_cat) & (structure_df["Подкатегория"] == subcat) & (structure_df["Блюдо"].astype(str).str.strip() != "")]
+            for idx, row in dishes_df.iterrows():
+                dish = row["Блюдо"]
+                price = row["Цена (₸)"] or 0
+                cost = row["Себестоимость (₸)"] or 0
+                margin = calculate_margin(price, cost)
+                col_d1, col_d2, col_d3, col_d4 = st.columns([5, 2, 1, 1])
+                with col_d1:
+                    st.markdown(f"🍽️ **{dish}**")
+                with col_d2:
+                    st.markdown(f"{price:,.0f} ₸ | {margin:.0f}%")
+                with col_d3:
+                    if st.button("✏️", key=f"edit_full_{idx}"):
+                        st.session_state.edit_dish_full = dish
+                        st.session_state.edit_price_full = price
+                        st.session_state.edit_cost_full = cost
+                with col_d4:
+                    if st.button("🗑️", key=f"del_full_{idx}"):
+                        updated = structure_df[~((structure_df["Основная категория"] == main_cat) & (structure_df["Подкатегория"] == subcat) & (structure_df["Блюдо"] == dish))]
+                        save_full_structure(updated)
+                        remove_menu_dish(dish)
+                        refresh_data()
+                        st.rerun()
+                st.markdown("---")
+    if "edit_dish_full" in st.session_state:
         st.markdown("---")
-        st.markdown("#### 📊 Маржинальность блюд")
-        chart_data = menu_data.copy()
-        chart_data["Маржинальность (%)"] = chart_data.apply(lambda x: calculate_margin(x["Цена продажи (₸)"], x["Себестоимость (₸)"]), axis=1)
-        color_col = "Категория" if "Категория" in chart_data.columns else None
-        fig = px.bar(chart_data, x="Блюдо", y="Маржинальность (%)", color=color_col, title="Маржинальность блюд", text_auto=".1f", color_discrete_sequence=["#d4a373"] if color_col is None else None)
-        fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", height=500, paper_bgcolor="rgba(0,0,0,0)")
-        fig.update_traces(textfont_color="white")
-        st.plotly_chart(fig, use_container_width=True, key="menu_margin_chart")
+        st.subheader(f"✏️ Редактирование: {st.session_state.edit_dish_full}")
+        with st.form("edit_full_form_new"):
+            new_price = st.number_input("Цена (₸)", min_value=0, value=int(st.session_state.edit_price_full))
+            new_cost = st.number_input("Себестоимость (₸)", min_value=0, value=int(st.session_state.edit_cost_full))
+            if st.form_submit_button("✅ Сохранить"):
+                structure_df = load_full_structure()
+                idx = structure_df[structure_df["Блюдо"] == st.session_state.edit_dish_full].index[0]
+                structure_df.at[idx, "Цена (₸)"] = new_price
+                structure_df.at[idx, "Себестоимость (₸)"] = new_cost
+                save_full_structure(structure_df)
+                menu_df = read_table("МЕНЮ")
+                if st.session_state.edit_dish_full in menu_df["Блюдо"].values:
+                    menu_idx = menu_df[menu_df["Блюдо"] == st.session_state.edit_dish_full].index[0]
+                    category = menu_df.at[menu_idx, "Категория"]
+                    ingredients_text = menu_df.at[menu_idx, "Ингредиенты"]
+                    upsert_menu_dish(st.session_state.edit_dish_full, category, ingredients_text, new_cost, new_price)
+                del st.session_state.edit_dish_full
+                refresh_data()
+                st.success("✅ Изменения сохранены!")
+                st.rerun()
+    st.markdown("---")
+    st.markdown("#### 📊 Маржинальность блюд")
+    chart_data = menu_data.copy()
+    chart_data["Маржинальность (%)"] = chart_data.apply(lambda x: calculate_margin(x["Цена продажи (₸)"], x["Себестоимость (₸)"]), axis=1)
+    color_col = "Категория" if "Категория" in chart_data.columns else None
+    fig = px.bar(chart_data, x="Блюдо", y="Маржинальность (%)", color=color_col, title="Маржинальность блюд", text_auto=".1f", color_discrete_sequence=["#d4a373"] if color_col is None else None)
+    fig.update_layout(plot_bgcolor="rgba(0,0,0,0)", height=500, paper_bgcolor="rgba(0,0,0,0)")
+    fig.update_traces(textfont_color="white")
+    st.plotly_chart(fig, use_container_width=True, key="menu_margin_chart")
 
 # === СКЛАД ===
 elif menu == "📦 Склад":
-    if ingredients is None:
+    if ingredients.empty:
         st.warning("📭 Файл данных не найден.")
     else:
         st.markdown("### 📦 Управление складом")
@@ -1002,9 +1036,7 @@ elif menu == "📦 Склад":
 
 # === ОТЧЕТЫ ===
 elif menu == "📈 Отчеты":
-    if orders is None:
-        st.warning("📭 Файл данных не найден.")
-    elif len(orders) == 0:
+    if orders.empty:
         st.info("📭 Нет заказов для отчёта.")
     else:
         st.markdown("### 📈 Отчеты")
@@ -1057,9 +1089,6 @@ elif menu == "📈 Отчеты":
 # === ПЕРСОНАЛ ===
 elif menu == "👥 Персонал":
     st.markdown("### 👥 Управление персоналом")
-    @st.cache_data
-    def load_staff():
-        return get_staff_df()
     def save_staff(df):
         if "PIN-код" in df.columns:
             df["PIN-код"] = df["PIN-код"].astype("object")
