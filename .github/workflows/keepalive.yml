@@ -1,4 +1,4 @@
-name: Keep Streamlit App Awake
+name: Keep Streamlit Apps Awake
 
 on:
   schedule:
@@ -8,12 +8,28 @@ on:
 jobs:
   keepalive:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Create empty commit to keep app awake
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Ping Cafe Purchases App
+        run: |
+          echo "🔄 Пингую Cafe Purchases..."
+          curl -I -s https://cafe-purchases-akwmedje7vxh2gsimhemuk.streamlit.app
+          echo "✅ Готово"
+      
+      - name: Ping Accounting Restaurant App
+        run: |
+          echo "🔄 Пингую Accounting Restaurant..."
+          curl -I -s https://accounting-restorant-hawaii-nevkbocshrdvbhx5rqmpti.streamlit.app
+          echo "✅ Готово"
+      
+      - name: Create empty commit to keep apps awake
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git commit --allow-empty -m "🔄 KeepAlive ping"
+          git commit --allow-empty -m "🔄 KeepAlive ping for both apps [skip ci]"
           git push
-
