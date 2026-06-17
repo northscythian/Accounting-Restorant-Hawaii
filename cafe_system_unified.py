@@ -1052,7 +1052,7 @@ elif selected_section == "📦 Закупки и склад":
             )
             
             st.dataframe(
-                stock_df.style.applymap(
+                stock_df.style.map(
                     lambda val: "color: #e74c3c; font-weight: bold" if val == "⚠️ Критический запас" else "color: #27ae60",
                     subset=["Статус"]
                 ),
