@@ -6,7 +6,7 @@ cd /d C:\Users\Sair3n\Desktop\Cafe_System
 taskkill /f /im python.exe /fi "windowtitle eq streamlit*" 2>nul
 
 echo Запуск приложения...
-start /B streamlit run cafe_app.py --server.port 8501 --server.headless true --browser.serverAddress localhost --browser.gatherUsageStats false
+start /B streamlit run cafe_system_unified.py --server.port 8501 --server.headless true --browser.serverAddress localhost --browser.gatherUsageStats false
 
 :: Ждем 4 секунды
 timeout /t 4 /nobreak > nul
